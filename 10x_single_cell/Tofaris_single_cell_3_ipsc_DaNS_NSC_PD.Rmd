@@ -1,0 +1,1537 @@
+---
+title: "Tofaris Group iPSC 10x DaNs PD vs NSC 3"
+author: "Devika Agarwal"
+date: 'Last update: `r date()`'
+output:
+  html_document:
+    theme: cerulean
+    number_sections: true
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: yes
+      toc_depth: 6
+params: 
+  wd: '~/Documents/George_tofaris_manuscripts/2021_DaN_PD_10x'
+  NumberOfCCAs:  ''
+  nGeneLowCutOff: ''
+  nGeneHighCutOff: ''
+  nUMILowCutOff: ''
+  nUMIHighCutOff: ''
+  ClusterResolution: ''  
+  MitoLowCutOff: '-Inf'
+  MitoHighCutOff: '0.15'
+  Perplex: '30'
+  Theta: '0.05'
+
+---
+<style type="text/css">
+
+body{ /* Normal  */
+      font-size: 12px;
+  }
+td {  /* Table  */
+  font-size: 10px;
+}
+h1.title {
+  font-size: 20px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 20px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 18px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+  font-size: 14px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ /* Code block */
+    font-size: 12px;
+}
+pre { /* Code block - determines code spacing between lines */
+    font-size: 14px;
+}
+</style>
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+library(Seurat)
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(Matrix)
+library(data.table)
+library(ggplot2)
+library(biomaRt)
+library(DT)
+library(patchwork)
+knitr::opts_chunk$set(cache=F,echo=FALSE,message=FALSE,warning=FALSE, cache.lazy = FALSE)
+## white background theme for all plots
+theme_set(theme_bw())
+setwd("~/Documents/George_tofaris_manuscripts/2021_DaN_PD_10x")
+```
+
+# George Tofaris single cell iPSC data
++ Technology: Single Cell RNAseq on 10x Genomics v3 Chemistry with 2 samples
++ Alignment: Processed with CellRanger (v5.0.1) for GEX with reference genome GRCH38-2020-A
++ Organism: Homo sapiens
++ Samples: 1 SNCA triplication clonal cell line from one Female donor with +/-aggregation treatment
++ Condition : 1 untreated and 1 treated with  PD aggregates.we exogenously add misfolded proteins to neurons in culture that in turn induces the formation of intracellular plaques.
++ Cellline: iPSC 
++ Celltype : "ideally" Dopinamergic neurons
++ Age : 73 days differentiated samples
++ Estimated cell numbers : 4,896 & 4819
++ Mean reads per cell : 45,272 & 51,701
++ Mean UMI Counts per cell : 2,656 & 2,386
+
+
+
+# load GEX 
+
+```{r load_data}
+# load data from the GEX output from CellRanger and the umi counts from Cite-seq-Count
+
+ipsc_gex_nsc <- Read10X("./TY84_01_NSC/filtered_feature_bc_matrix/")
+ipsc_gex_pd <- Read10X("./TY85_02_PD/filtered_feature_bc_matrix/")
+
+
+cat("Number of genes and cells before QC filtering in the NSC sample: ", dim(ipsc_gex_nsc), fill=T) 
+cat("Number of genes and cells before QC filtering in the PD sample: ", dim(ipsc_gex_pd), fill=T) 
+
+# Remove genes not expressed in any cells
+cat("Number of genes with no UMI counts in any cell in NSC sample: ", sum(rowSums(ipsc_gex_nsc) == 0), fill=T)
+cat("Number of genes with exactly a count of 1 in a single cell (genes with row sum of 1) in NSC sample:", sum(rowSums(ipsc_gex_nsc) == 1), fill=T)
+
+cat("Number of genes with no UMI counts in any cell in PD sample: ", sum(rowSums(ipsc_gex_pd) == 0), fill=T)
+cat("Number of genes with exactly a count of 1 in a single cell (genes with row sum of 1) in PD sample:", sum(rowSums(ipsc_gex_pd) == 1), fill=T)
+
+
+# We define a gene as detectable if at least 3 cells contain more than 1 transcript from the gene
+keep_feature <- rowSums(ipsc_gex_nsc >= 1) >3 
+ipsc_gex_nsc <-ipsc_gex_nsc[keep_feature, ]
+
+keep_feature <- rowSums(ipsc_gex_pd >= 1) >3 
+ipsc_gex_pd <-ipsc_gex_pd[keep_feature, ]
+
+
+cat("Number of genes and cells after filtering of genes based on UMI counts >= 1 in atleast 3 cells in NSC sample : ", dim(ipsc_gex_nsc), fill=T)
+
+
+cat("Number of genes and cells after filtering of genes based on UMI counts >= 1 in atleast 3 cells in PD sample : ", dim(ipsc_gex_pd), fill=T)
+
+```
+
+
+```{r}
+# Set up seurat object and add in HTO data
+# Setup Seurat object with GEX data
+ipsc.nsc <- CreateSeuratObject(counts =ipsc_gex_nsc, min.cells = 3)
+
+ipsc.pd <- CreateSeuratObject(counts =ipsc_gex_pd, min.cells = 3)
+
+```
+
+
+
+```{r,QC_metrics, echo=FALSE}
+# Generate QC metrics and store
+# Calculate percentage of UMIs from ribosomal genes
+
+ipsc.nsc[["percent.ribo"]] <- PercentageFeatureSet(ipsc.nsc, pattern = "^RP[SL][[:digit:]]" )
+ipsc.pd[["percent.ribo"]] <- PercentageFeatureSet(ipsc.pd, pattern = "^RP[SL][[:digit:]]" )
+
+
+# Calculate percentage of UMIs from mitochondrial genes (The [[ operator can add columns to object metadata)
+ipsc.nsc[["percent.mt"]] <- PercentageFeatureSet(ipsc.nsc, pattern = "^MT-")
+ipsc.pd[["percent.mt"]] <- PercentageFeatureSet(ipsc.pd, pattern = "^MT-")
+
+```
+
+
+
+
+
+# QC metrics for NSC and PD samples
+
+
+```{r, fig.height=8, fig.width=10}
+cat("Visualising QC metrics for NSC sample", fill = T)
+
+# Visualise QC metrics as a violin plot to show any outliers
+p <- VlnPlot(ipsc.nsc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 2, pt.size = 0.5) 
+p
+
+```
+
+```{r, fig.height=6, fig.width=12}
+#VlnPlot(ipsc.hashtag, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 4, pt.size = 0)
+plot1 <- FeatureScatter(ipsc.nsc, feature1 = "nCount_RNA", feature2 = "percent.mt")+NoLegend() + RotatedAxis()
+plot2 <- FeatureScatter(ipsc.nsc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") + NoLegend() + RotatedAxis()
+plot3 <- FeatureScatter(ipsc.nsc, feature1 = "nCount_RNA", feature2 = "percent.ribo") + NoLegend() +RotatedAxis()
+plot1+plot2+plot3
+
+```
+
+```{r,fig.height=8, fig.width=10}
+cat("Visualising QC metrics for PD sample", fill =T)
+
+# Visualise QC metrics as a violin plot to show any outliers
+p <- VlnPlot(ipsc.pd, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 2, pt.size = 0.5) 
+p
+
+```
+
+```{r,, fig.height=6, fig.width=12}
+#VlnPlot(ipsc.hashtag, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.ribo"), ncol = 4, pt.size = 0)
+plot1 <- FeatureScatter(ipsc.pd, feature1 = "nCount_RNA", feature2 = "percent.mt")+NoLegend() + RotatedAxis()
+plot2 <- FeatureScatter(ipsc.pd, feature1 = "nCount_RNA", feature2 = "nFeature_RNA") + NoLegend() + RotatedAxis()
+plot3 <- FeatureScatter(ipsc.pd, feature1 = "nCount_RNA", feature2 = "percent.ribo") + NoLegend() +RotatedAxis()
+plot1+plot2+plot3
+```
+
+
+
+```{r, echo=FALSE}
+cat("Number of genes and cells before QC in NSC sample:", dim(ipsc.nsc@assays$RNA@counts), fill=T)
+pre_filter_nsc <- dim(ipsc.nsc@assays$RNA@counts)
+cat("Filter out cells having percent.mito > 25% and genes < 200 and > 7600 in NSC sample", fill=T)
+ipsc.nsc <- subset(ipsc.nsc, subset = nFeature_RNA > 200 & nFeature_RNA < 7600 & percent.mt < 25)
+cat("Number of genes and cells After QC in NSC sample:", dim(ipsc.nsc@assays$RNA@counts), fill=T)
+post_filter_nsc <- dim(ipsc.nsc@assays$RNA@counts)
+cat("Number of cells removed in  QC in NSC sample:", pre_filter_nsc[2] - post_filter_nsc[2], fill=T)
+
+cat("Number of genes and cells before QC in PD sample:", dim(ipsc.pd@assays$RNA@counts), fill=T)
+pre_filter_pd <- dim(ipsc.pd@assays$RNA@counts)
+cat("Filter out cells having percent.mito > 25% and genes < 200 and > 7600 in PD sample", fill=T)
+ipsc.pd <- subset(ipsc.pd, subset = nFeature_RNA > 200 & nFeature_RNA < 7600 & percent.mt < 25)
+cat("Number of genes and cells After QC in PD sample:", dim(ipsc.pd@assays$RNA@counts), fill=T)
+post_filter_pd <- dim(ipsc.pd@assays$RNA@counts)
+cat("Number of cells removed in  QC in PD sample:", pre_filter_pd[2] - post_filter_pd[2], fill=T)
+
+```
+
+
+```{r}
+# Add a treatment column to metadata for nsc and PD sample
+ipsc.nsc$Treatment <- "NSC"
+ipsc.pd$Treatment <- "PD"
+
+
+```
+
+
+# Cluster and visualize cells using the normal integration seurat workflow
+
++ examine for the potential presence of batch effects and covariates influencing data.
++ Maybe cell dont cluster by samples but by cell types
+
+
+```{r variable_g, echo=FALSE, fig.width= 12}
+
+# Normalize RNA data with log normalization
+ipsc.nsc <- NormalizeData(ipsc.nsc)
+ipsc.nsc <- FindVariableFeatures(ipsc.nsc, selection.method = "vst", nfeatures = 2000)
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(ipsc.nsc), 10)
+
+cat("Top 10 Variable genes in NSC sample")
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(ipsc.nsc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+
+
+ipsc.pd <- NormalizeData(ipsc.pd)
+ipsc.pd <- FindVariableFeatures(ipsc.pd, selection.method = "vst", nfeatures = 2000)
+
+cat("Top 10 Variable genes in PD sample")
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(ipsc.pd), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(ipsc.pd)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+# Add Cell cycle scores to Seurat Object
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+ipsc.nsc <- CellCycleScoring(ipsc.nsc, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+ipsc.pd <- CellCycleScoring(ipsc.pd, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+
+ipsc.list <- list("ipsc.nsc" =ipsc.nsc, "ipsc.pd" =ipsc.pd)
+
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = ipsc.list)
+ipsc.anchors <- FindIntegrationAnchors(object.list = ipsc.list, anchor.features = features)
+# this command creates an 'integrated' data assay
+all_features <- lapply(ipsc.list, row.names) %>% Reduce(intersect, .) 
+ipsc.combined <- IntegrateData(anchorset = ipsc.anchors, features.to.integrate = all_features )
+```
+
+## Perform integrated downstream analysis
+
++ Based on the Elbow plot, we use top 10 PCS for downstream clustering and uMAP visualisation. 
+
+```{r}
+# Perform  integrated downstream analysis
+# specify that we will perform downstream analysis on the corrected data note that the original
+# unmodified data still resides in the 'RNA' assay
+DefaultAssay(ipsc.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+ipsc.combined <- ScaleData(ipsc.combined, verbose = FALSE,features = all_features)
+ipsc.combined <- RunPCA(ipsc.combined, npcs = 30, verbose = FALSE)
+ElbowPlot(ipsc.combined)
+ipsc.combined <- RunUMAP(ipsc.combined, reduction = "pca", dims = 1:10)
+ipsc.combined <- FindNeighbors(ipsc.combined, reduction = "pca", dims = 1:10, k.param = 20)
+ipsc.combined <- FindClusters(ipsc.combined, resolution = 0.3)
+```
+
+```{r, fig.width=12,fig.height=5}
+# Visualisation
+# Visualization
+p1 <- DimPlot(ipsc.combined, reduction = "umap", group.by = "Treatment")
+p2 <- DimPlot(ipsc.combined, reduction = "umap", label = TRUE, repel = TRUE)
+p3 <- DimPlot(ipsc.combined, reduction = "umap", group.by = "Phase", order = T)
+p1 + p2 + p3
+```
+
+```{r}
+DimPlot(ipsc.combined, reduction = "umap", split.by = "Treatment")
+```
+
+
+
+
+
+
++ Cell cycle gene are coming up as top genes in the top PCs, so add cell cycle phase scores for each cell
++ Treatment and control samples are not seperated perse, but there are clusters in PC1-PC2 plot 
++ Use scater to examine Covariates in detail
+
+```{r}
+print(ipsc.combined[["pca"]], dims = 1:5, nfeatures = 10)
+VizDimLoadings(ipsc.combined, dims = 1:2, reduction = "pca")
+# Look for Cell cycle genes vairation as top genes in PCA are cell cycle and regress it out
+```
+
+## Covariates influencing PCA
+
+```{r}
+#
+library(scater)
+DefaultAssay(ipsc.combined) <- "RNA"
+# convert Seurat object to sce object to use with scater
+ipsc.combined_sce <- as.SingleCellExperiment(ipsc.combined)
+vars <- getVarianceExplained(ipsc.combined_sce, 
+    variables=c( "Treatment", "Phase", "percent.mt","percent.ribo","S.Score","G2M.Score","nFeature_RNA", "nCount_RNA"))
+head(vars)
+
+
+pc_vars <- getExplanatoryPCs(ipsc.combined_sce, n_dimred = 10 ,variables=c("Treatment", "Phase", "percent.mt","percent.ribo","S.Score","G2M.Score","nFeature_RNA","nCount_RNA"))
+
+```
+
+
+```{r}
+cat("plot the variance explained by covariates for gene expression of each gene")
+plotExplanatoryVariables(vars)
+```
+
++ plot the variance explained by covariates for each PC (calculated only for the highly vairiable genes)
++ Based on the plot below , most of the variance in PC1 is by nUMI, so we will regress that out
+
+```{r, fig.width=5, fig.height=6}
+library(pheatmap)
+library(viridis)
+library(viridisLite)
+library(grid)
+setHook("grid.newpage", function() pushViewport(viewport(x=1,y=1,width=0.9, height=0.9, name="vp", just=c("right","top"))), action="prepend")
+
+col.pal <- RColorBrewer::brewer.pal(10,"Blues")
+pheatmap(
+  mat               = pc_vars,
+  kmeans_k          = NA,
+  clustering_distance_rows = "euclidean",
+  clustering_disance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  border_color      = NA,
+  cluster_cols      = T,
+  cluster_rows      = F,
+  show_colnames     = T,
+  show_rownames     = T,
+  #legend_breaks = c(0,0.2,0.5,0.7,1),
+  #legend_labels = c("0","0.2","0.5","1", "Correlation(r)\n"),
+  #annotation_col    = annotation_col,
+  #annotation_row    = annotation_row, 
+  drop_levels       = TRUE,
+  fontsize          = 8,
+  main              = "% of variance explained by covariates for PCs based on HVG",
+  angle_col = 45, silent = F
+)
+setHook("grid.newpage", NULL, "replace")
+grid.text("Covariates", y=-0.03, gp=gpar(fontsize=8))
+grid.text("Prinicpal components", x=-0.03, rot=90, gp=gpar(fontsize=8))
+```
+
+```{r, fig.width=10, fig.height=8}
+cat("PCA plots coloured by various covariates")
+#ipsc.hashtag.singlet_sce <- runPCA(ipsc.hashtag.singlet_sce, ncomponents=30, ntop=2000)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "nCount_RNA", point_size=0.8) 
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "Phase",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "Treatment",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "percent.ribo",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "percent.mt",point_size=0.8)
+```
+
+
+
+```{r, fig.height=14,fig.width=12}
+cat("Visualise continuous covariates for clusters")
+FeaturePlot(ipsc.combined, features = c("percent.mt","percent.ribo","nCount_RNA","nFeature_RNA","S.Score","G2M.Score","SNCA","SNAP25","STMN1", "SCN2A","L1TD1","VIM","SERPINI1","SYNPR","TH"),ncol = 5, order = T)
+```
+
+```{r}
+FeaturePlot(ipsc.combined, features = c("SNCA"), split.by = "Treatment", order = T)
+VlnPlot(ipsc.combined, features = "SNCA", group.by = "Treatment", assay = "RNA", slot = "data", sort=T, log = F)
+VlnPlot(ipsc.combined, features = "SNCA", group.by = "seurat_clusters", assay = "integrated", slot = "data", sort=T, log = F, split.by = "Treatment", split.plot = T)
+cat("pluripotency neuron genes")
+VlnPlot(ipsc.combined, features = c("NANOG","SOX2","POU5F1","UTF1","TAC3"), group.by = "seurat_clusters", assay = "integrated", slot = "data", sort=T, log = F, flip = F, combine = T, ncol = 2)
+```
+
+```{r}
+saveRDS(ipsc.combined,file="./Tofaris_10x_iPSC_DaN_PD_treated_postnormalisation_usual_seuratintegration_workflow.rds")
+saveRDS(ipsc.anchors, file="./Tofaris_10x_iPSC_DaN_PD_treated_logintegration_anchors.rds")
+rm(ipsc.combined, ipsc.anchors, ipsc.list, ipsc.nsc, ipsc.pd, ipsc_gex_pd, ipsc_gex_nsc)
+```
+
+# Run integration workflow with SCT transformed data
++ A better normalisation method for removing unwanted variation from covariates such as nUMI
++ Also see neural markers (including SNCA on PC1)
+
+```{r, eval=F}
+ipsc.list <- lapply(X = ipsc.list, FUN = SCTransform)
+features <- SelectIntegrationFeatures(object.list = ipsc.list, nfeatures = 3000)
+ipsc.list <- PrepSCTIntegration(object.list = ipsc.list, anchor.features = features)
+
+ipsc.anchors_sct <- FindIntegrationAnchors(object.list = ipsc.list, normalization.method = "SCT", 
+    anchor.features = features, dims = 1:30)
+
+# this command creates an 'integrated' data assay
+#lapply(DefaultAssay(ipsc.list)) <- "SCT"
+all_features <- lapply(ipsc.list, row.names) %>% Reduce(intersect, .) 
+ipsc.combined_sct <- IntegrateData(anchorset = ipsc.anchors_sct, features.to.integrate = all_features, normalization.method = "SCT", dims = 1:30)
+```
+
+# Cluster and uMAP plot after regressing out covariates
+
++ As heatmap shows higher influence of  nUMI on  PC1,  so used SCT transform to regress this out
++ Used 30 PCs and a resolution of 0.6 for clustering with louvain with multilevel refinement algorithm
+```{r, eval=F}
+DefaultAssay(ipsc.combined_sct) <- "integrated"
+ipsc.combined_sct <- RunPCA(ipsc.combined_sct, npcs = 60, verbose = FALSE)
+ElbowPlot(ipsc.combined_sct)
+ipsc.combined_sct <- RunUMAP(ipsc.combined_sct, reduction = "pca", dims = 1:12)
+ipsc.combined_sct <- FindNeighbors(ipsc.combined_sct, reduction = "pca", dims = 1:12, k.param = 20)
+ipsc.combined_sct <- FindClusters(ipsc.combined_sct, resolution = 0.3, algorithm = 2)
+```
+
+
+```{r}
+ipsc.combined_sct <- readRDS( file="./Tofaris_10x_SCTransform_seurat_integration.rds")
+# Projecting singlet identities on TSNE visualization
+cat("UMAP plot showing identified clusters")
+DimPlot(ipsc.combined_sct, label = T, order = T)
+
+cat("UMAP plot showing identified clusters coloured by Treatment")
+  DimPlot(ipsc.combined_sct, group.by = "Treatment", order =T)
+
+cat("UMAP plot showing identified clusters coloured by cell-cycle phase")
+DimPlot(ipsc.combined_sct, group.by = "Phase")
+
+cat("UMAP plot showing identified clusters split by treatment, all clusters are present in both conditions")
+DimPlot(ipsc.combined_sct, split.by = "Treatment")
+
+```
+
+
++ Visulaise neuronal markers to see if we see clear neuronal population
++ based on this  I am more inclined to believe that we have two big clusters of neurons , that are in the range of mature to immature.
++ We should also just look for treatment markers in these 
++ DaN Markers : TH, LMX1A , SLC6A3, SLC18A2, KCNJ6
++ immature neuron markers : STMN1 , NEUROD1
++ Mature Neurons : SYP,MAP2
++ Adult Neuronal genes : SCN2A , SNAP25, SYNPR, SERPINI1
+
+
+
+```{r, fig.height=14,fig.width=14}
+DefaultAssay(ipsc.combined_sct) <- "SCT"
+cat("Visualise continuous covariates for clusters")
+FeaturePlot(ipsc.combined_sct, features = c("percent.mt","percent.ribo","nCount_RNA","nFeature_RNA","S.Score","G2M.Score","SNCA","SNAP25","STMN1", "SCN2A","NEUROD1","VIM","MAP2","SYNPR","TH", "SYP"),ncol = 5, order = T, slot="data")
+```
+
+
+```{r}
+
+FeaturePlot(ipsc.combined_sct, features = c("SNCA"), split.by = "Treatment", order = T, slot="data")
+VlnPlot(ipsc.combined_sct, features = "SNCA", group.by = "Treatment", sort=T, log = F, slot="data", assay="RNA")
+VlnPlot(ipsc.combined_sct, features = "SNCA", group.by = "seurat_clusters", sort=T, log = F, split.by = "Treatment", split.plot = T, assay="RNA")
+cat("pluripotency neuron genes")
+VlnPlot(ipsc.combined_sct, features = c("NANOG","SOX2","POU5F1","UTF1","TAC3"), group.by = "seurat_clusters", sort=T, log = F, flip = F, combine = T, ncol = 2, assay="RNA")
+```
+
+## Covariates influencing PCA after using SCT transform + integration
+
+```{r}
+#
+library(scater)
+# convert Seurat object to sce object to use with scater
+ipsc.combined_sce <- as.SingleCellExperiment(ipsc.combined_sct)
+vars <- getVarianceExplained(ipsc.combined_sce, 
+    variables=c( "Treatment", "Phase", "percent.mt","percent.ribo","S.Score","G2M.Score","nFeature_RNA", "nCount_RNA"))
+head(vars)
+
+
+pc_vars <- getExplanatoryPCs(ipsc.combined_sce, n_dimred = 12 ,variables=c("Treatment", "Phase", "percent.mt","percent.ribo","S.Score","G2M.Score","nFeature_RNA","nCount_RNA"))
+
+```
+
+
+```{r}
+cat("plot the variance explained by covariates for gene expression of each gene")
+plotExplanatoryVariables(vars)
+```
+
++ plot the variance explained by covariates for each PC (calculated only for the highly vairiable genes)
+
++ Based on the plot below , effect of nUMI on PC1 is much lesser than when using log normalised data before integration
+
+
+
+```{r, fig.width=5, fig.height=6}
+library(pheatmap)
+library(viridis)
+library(viridisLite)
+library(grid)
+setHook("grid.newpage", function() pushViewport(viewport(x=1,y=1,width=0.9, height=0.9, name="vp", just=c("right","top"))), action="prepend")
+
+col.pal <- RColorBrewer::brewer.pal(10,"Blues")
+pheatmap(
+  mat               = pc_vars,
+  kmeans_k          = NA,
+  clustering_distance_rows = "euclidean",
+  clustering_disance_cols = "euclidean",
+  clustering_method = "ward.D2",
+  border_color      = NA,
+  cluster_cols      = T,
+  cluster_rows      = F,
+  show_colnames     = T,
+  show_rownames     = T,
+  #legend_breaks = c(0,0.2,0.5,0.7,1),
+  #legend_labels = c("0","0.2","0.5","1", "Correlation(r)\n"),
+  #annotation_col    = annotation_col,
+  #annotation_row    = annotation_row, 
+  drop_levels       = TRUE,
+  fontsize          = 8,
+  main              = "% of variance explained by covariates for PCs based on HVG",
+  angle_col = 45, silent = F
+)
+setHook("grid.newpage", NULL, "replace")
+grid.text("Covariates", y=-0.03, gp=gpar(fontsize=8))
+grid.text("Prinicpal components", x=-0.03, rot=90, gp=gpar(fontsize=8))
+```
+```{r, fig.width=10, fig.height=8}
+cat("PCA plots coloured by various covariates")
+#ipsc.hashtag.singlet_sce <- runPCA(ipsc.hashtag.singlet_sce, ncomponents=30, ntop=2000)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "nCount_RNA", point_size=0.8) 
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "Phase",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "Treatment",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "percent.ribo",point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "percent.mt",point_size=0.8)
+```
+
+
+
+
+```{r, fig.height=8,fig.width=10, eval=F}
+
+saveRDS(ipsc.combined_sct, file="./Tofaris_10x_SCTransform_seurat_integration.rds")
+saveRDS(ipsc.anchors_sct, file="Tofaris_10x_SCTtransform_cca_integration_anchors.rds")
+rm(ipsc.anchors_sct, ipsc.combined_sce, ipsc.combined_sct)
+```
+
+
+
+
+
+
+
+
+# Cell type identity
+
++ For the identified clusters in this study, cell type identity will be predicted with Seurat's transfer label funciton and by projecting the PCA space of the reference on the query dataset (iPSC cells)
++ The reference dataset is the  single nuclei Substantia nigra atlas from Welch et al (2019) (DOI:https://doi.org/10.1016/j.cell.2019.05.006)
++ 7 Human Donors
++ 40,453 nuclei and 18,286 genes post QC and filtering,derived from the SN of 7 human donors,
++ Major cell types :24 clusters spanning all known resident cell classes: astrocytes, fibroblasts, mural cells, microglia, neurons (including TH+ dopaminergic neurons and multiple inhibitory types), oligodendrocytes, and oligodendrocyte progenitor cells (polydendrocytes)
++ SN single cell atlas was prcoessed and data normalised with Seurat SCT transform previously to use for cell type prediction
++ For the cell type classification 60 PC dimensinons  and a K.weight=30 (when weight anchors, only these many neighbours are used) were used to specify the KNN search space and  for the anchor weighting. This resulted in better classification of low number cell types such as DaNs.
+```{r}
+#ipsc.combined_sct <- readRDS(file="./Tofaris_10x_SCTransform_seurat_integration.rds")
+# SN single cell atlas was prcoessed and data normalised with Seurat SCT transform previously and data loaded in
+# Load in SN single cell atlas data
+#library(liger)
+#SN_2019 <- readRDS(file="../SN_human_7_ind_liger.rds")
+#SN_2019_raw_counts <- as.matrix(SN_2019@raw.data)
+#SN_2019_1 <- as.matrix(SN_2019_raw_counts[[1]])
+#SN_2019_2 <- as.matrix(SN_2019_raw_counts[[2]])
+#SN_2019_3 <- as.matrix(SN_2019_raw_counts[[3]])
+#SN_2019_4 <- as.matrix(SN_2019_raw_counts[[4]])
+#SN_2019_5 <- as.matrix(SN_2019_raw_counts[[5]])
+#SN_2019_6 <- as.matrix(SN_2019_raw_counts[[6]])
+#SN_2019_7 <- as.matrix(SN_2019_raw_counts[[7]])
+#SN_2019_final <- cbind(SN_2019_1,SN_2019_2,SN_2019_3,SN_2019_4,SN_2019_5,SN_2019_6,SN_2019_7)
+#rm(SN_2019_1,SN_2019_2,SN_2019_3,SN_2019_4,SN_2019_5,SN_2019_6,SN_2019_7,SN_2019_raw_counts)
+
+#SN_2019_final <- as.data.frame(SN_2019_final)
+
+
+# Remove genes not expressed in any cells
+#cat("Number of genes and samples: ", dim(SN_2019_final), fill=T)
+#cat("Number of genes with no UMI counts in any cell: ", sum(rowSums(SN_2019_final) == 0), fill=T)
+#cat("Number of genes with exactly a count of 1 in a single cell (genes with row sum of 1):", sum(rowSums(SN_2019_final) == 1), fill=T)
+
+# We define a gene as detectable if at least two cells contain more than 1 transcript from the gene
+#keep_feature <- rowSums(SN_2019_final > 1) >3 
+ #SN_2019_final <-SN_2019_final[keep_feature, ]
+
+#cat("Number of genes and samples after filtering of genes based on UMI counts > 1 in atleast 3 cells : ", dim(SN_2019_final), fill=T)
+
+ 
+#SN_2019_metadata <- SN_2019@cell.data
+#SN_2019_celltype <- as.data.frame(SN_2019@clusters)
+#SN_2019_metadata <- cbind(SN_2019_metadata,SN_2019_celltype)
+#colnames(SN_2019_metadata)[4] <- "Cell_type_L2"
+#rm(SN_2019)
+```
+
+```{r}
+# add cell_type level 1 to metadata and rename celltypes to the major class
+#library(plyr)
+#SN_2019_metadata$Cell_type_L1 <- SN_2019_metadata$Cell_type_L2
+# renames level 1 cell suptyes to major cell classes
+#SN_2019_metadata$Cell_type_L1 <-  revalue(SN_2019_metadata$Cell_type_L1, c("ASTRO"="Astrocytes", "ASTROgfap"="Astrocytes","ASTROfos"="Astrocytes","ENDOstalk"="Endothelial","ENDOmural"="Endothelial","ENDOfibro"="Endothelial","MG"="Microglia","MGfos"="Microglia","MGmp"="Microglia","NEUROinh1"="Inh_Neurons","NEUROinh2"="Inh_Neurons", "NEUROinh3"="Inh_Neurons","NEUROinh4"="Inh_Neurons","NEUROinh5"="Inh_Neurons","NEUROex1"="Ex_Neurons","NEUROdop"="DaNs","OLIGO1"="ODC","OLIGO2"="ODC","OLIGO3"="ODC","OLIGO4"="ODC","OPC1"="OPC","OLIGO5"="ODC","OPC2"="OPC"))
+
+```
+
+```{r}
+#options(future.globals.maxSize = 6000 * 1024^2)
+#SN_macosko<- CreateSeuratObject(SN_2019_final,meta.data =SN_2019_metadata)
+#Idents(object = SN_macosko) <- "Cell_type_L1"
+#SN_macosko$cell_type <- Idents(object=SN_macosko)
+#SN_macosko <- SCTransform(SN_macosko, return.only.var.genes = F, variable.features.n = 3000)
+#saveRDS(SN_macosko, file="SN_macosko_seurat_v3.1.2_SCTtransform.rds")
+
+#SN_macosko <- readRDS(file="./SN_macosko_seurat_v3.1.2_SCTtransform.rds")
+#DaN.anchors <- readRDS(file="./SN_macosko_Tofaris_IPSC_Transfer_anchors_celltype_prediciton.rds")
+#SN_macosko <- UpdateSeuratObject(SN_macosko)
+#SN_macosko <- RunPCA(SN_macosko, npcs = 60)
+#DaN.anchors <- FindTransferAnchors(reference = SN_macosko, query = ipsc.combined_sct, 
+#dims = 1:60, normalization.method = "SCT", query.assay = "SCT", reference.assay = "SCT",k.anchor = 5, npcs = 60)
+
+#ipsc.combined_sct <- TransferData(anchorset = DaN.anchors, refdata = SN_macosko$cell_type, query = ipsc.combined_sct,
+#dims = 1:60, k.weight = 10)
+
+#ipsc.hashtag.singlet <- AddMetaData(ipsc.hashtag.singlet, metadata = predictions)
+#table(ipsc.combined_sct$predicted.id,ipsc.combined_sct$seurat_clusters)
+#table(ipsc.combined_sct$predicted.id,ipsc.combined_sct$Treatment)
+
+#saveRDS(DaN.anchors, file="SN_macosko_Tofaris_IPSC_Transfer_anchors_celltype_prediciton.rds")
+#rm(DaN.anchors,SN_macosko)
+#saveRDS(ipsc.combined_sct, file="./Tofaris_10x_Macosko_SCTransform_celltype_predicted.rds")
+# revalue a factor
+#ipsc.hashtag.singlet <- readRDS(file="Tofaris_10x_HTO_RNA_singlets_postnormalisation_SCTransform_celltype_predicted_v2.rds")
+# Add a broad_celltype column to metadata
+#ipsc.hashtag.singlet$broad_celltype <- ipsc.hashtag.singlet$predicted.id
+#ipsc.hashtag.singlet$broad_celltype  <- mapvalues(ipsc.hashtag.singlet$broad_celltype, from = c("Astrocytes", "DaNs","Endothelial","Ex_Neurons","Inh_Neurons","Microglia","ODC","OPC"), to = c("Non_neuronal", "Neuronal","Non_neuronal","Neuronal","Neuronal","Non_neuronal","Non_neuronal","Non_neuronal"))
+#saveRDS(ipsc.hashtag.singlet, file="./Tofaris_10x_HTO_RNA_singlets_postnormalisation_SCTransform_celltype_predicted_v2.rds")
+```
+
+## UMAP with iPSC data projected onto Substantia Nigra atlas UMAP structure
+
+```{r}
+#ipsc.combined_sct <- readRDS(file="./Tofaris_10x_Macosko_SCTransform_celltype_predicted.rds")
+#SN_macosko <- RunPCA(SN_macosko, npcs = 60)
+#SN_macosko <- RunUMAP(SN_macosko, dims = 1:60, reduction = "pca", return.model = TRUE)
+#ipsc.combined_sct <- MapQuery(anchorset = DaN.anchors, reference = SN_macosko, query = ipsc.combined_sct, 
+ # refdata = list(celltype = "cell_type"), reference.reduction = "pca", reduction.model = "umap", transferdata.args = #(k.weight = 10, dims =1:60), integrateembeddings.args = list(new.reduction.name = "ref.pca"))
+#saveRDS(ipsc.combined_sct, file = "./Tofaris_10x_macosko_scttranform_celltype_predictied_projectedumap.rds")
+#saveRDS(SN_macosko, file="./SN_macosko_seurat_v3.1.2_SCTtransform.rds")
+
+ipsc.combined_sct <- readRDS(file="./Tofaris_10x_macosko_scttranform_celltype_predictied_projectedumap.rds")
+SN_macosko <- readRDS(file="./SN_macosko_seurat_v3.1.2_SCTtransform.rds")
+p1 <- DimPlot(SN_macosko, group.by = "Cell_type_L1", label =T, label.size = 3, repel =T)+ NoLegend() + ggtitle("SN reference annotations")
+#saveRDS(p1, file="SN_macosko_umap_plot.rds")
+p2 <- DimPlot(ipsc.combined_sct, reduction = "ref.umap", group.by = "predicted.celltype", label = TRUE, 
+    label.size = 3, repel = TRUE) + NoLegend() + ggtitle("iPSC transferred labels")
+p1 + p2
+
+```
+
+ ## Sankey plot of predicted celltype ids vs Treatment group 
+ 
+```{r}
+#make a Sankey plot of predicted cell ids vs  ipsc clusters
+
+metadata_ipsc <- ipsc.combined_sct@meta.data
+
+edges <- as.data.frame(table(metadata_ipsc$Treatment, metadata_ipsc$predicted.id), stringAsFactors=F)
+colnames(edges)[1] <- "iPSC_Treatment_Group"
+colnames(edges)[2] <- "Predicted_celltype"
+colnames(edges)[3] <- "Value"
+edges$iPSC_Treatment_Group <- as.character(edges$iPSC_Treatment_Group)
+edges$Predicted_celltype <- as.character(edges$Predicted_celltype)
+
+#library(devtools)
+#install_github("DisplayR/flipPlots")
+library(flipPlots)
+cat("A river plot showing the predicted cell types for the iPSC treatment groups based on the Nigra cell atlas")
+SankeyDiagram(edges[, -3],
+              link.color = "Source", 
+              weights = edges$Value, max.categories = 23, hovertext.show.percentages = T, label.show.counts = T, font.size = 10, variables.share.values =T, label.show.percentages = T ) 
+```
+
+
+
+
+
+ ## Sankey plot of predicted celltype ids vs seurat clusters 
+ 
+```{r}
+#make a Sankey plot of predicted cell ids vs  ipsc clusters
+
+#metadata_ipsc <- ipsc.combined_sct@meta.data
+
+edges <- as.data.frame(table(metadata_ipsc$seurat_clusters, metadata_ipsc$predicted.id), stringAsFactors=F)
+colnames(edges)[1] <- "iPSC_seurat_clusters"
+colnames(edges)[2] <- "Predicted_celltype"
+colnames(edges)[3] <- "Value"
+edges$iPSC_seurat_clusters <- as.character(edges$iPSC_seurat_clusters)
+edges$Predicted_celltype <- as.character(edges$Predicted_celltype)
+
+#library(devtools)
+#install_github("DisplayR/flipPlots")
+library(flipPlots)
+cat("A river plot showing the predicted cell types for the iPSC seurat clusters based on the Nigra cell atlas")
+SankeyDiagram(edges[, -3],
+              link.color = "Source", 
+              weights = edges$Value, max.categories = 23, hovertext.show.percentages = T, label.show.counts = T, font.size = 10, variables.share.values =T, label.show.percentages = T ) 
+```
+
+
+
+
+## PCA plot to show maturity differences
++ As the PCA  plots above showed some branching of the cells into two (usual workflow), we want to see if its a neuronal vs non-neuronal divides (based on neuronal maturity)
+
+```{r}
+# Add a broad_celltype column to metadata
+ipsc.combined_sct$broad_celltype <- ipsc.combined_sct$predicted.id
+ipsc.combined_sct$broad_celltype  <- mapvalues(ipsc.combined_sct$broad_celltype, from = c("Astrocytes", "DaNs","Endothelial","Ex_Neurons","Inh_Neurons","Microglia","ODC","OPC"), to = c("Non_neuronal", "Neuronal","Non_neuronal","Neuronal","Neuronal","Non_neuronal","Non_neuronal","Non_neuronal"))
+```
+
+
+```{r,fig.height=4,fig.width=6}
+
+library(scater)
+DefaultAssay(ipsc.combined_sct) <- "SCT"
+ipsc.combined_sce <- as.SingleCellExperiment(ipsc.combined_sct)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "broad_celltype", point_size=0.8) 
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "predicted.id", point_size=0.8) 
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "SCN2A", point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "SNAP25", point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "SYP", point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "STMN1", point_size=0.8)
+plotPCA(ipsc.combined_sce, ncomponents = 4, colour_by = "SNCA", point_size=0.8)
+```
+
++ Proportion of predicted cell types per  treatment
+
+
+```{r}
+metadata_ipsc <- ipsc.combined_sct@meta.data
+metadata_short <- metadata_ipsc %>% dplyr:: group_by(Treatment, predicted.id)  %>% dplyr::summarise(tot.per.celltype=n())  %>% dplyr:: mutate(tot.treatment.pt= sum(tot.per.celltype)) %>% dplyr:: mutate(percent=100*tot.per.celltype/tot.treatment.pt)
+
+#setnames(metadata_short, "sample_demux", "Sample")
+setnames(metadata_short, "predicted.id", "Predicted_Celltype")
+#metadata_short$predicted.id <- as.factor(metadata_short$predicted.id)
+cat("proportions of all major SN cell types per iPSC treatment group")
+metadata_short %>% DT::datatable()
+```
+
+```{r}
+library(RColorBrewer)
+treatment_plot <- ggplot(metadata_short, aes(Treatment, percent, fill=Predicted_Celltype)) 
+treatment_plot <- treatment_plot +geom_bar(stat="identity", position="stack", colour ="black", width = 0.5)  + scale_fill_brewer(palette="Set2")
+#sample_plot <- sample_plot + coord_flip()
+treatment_plot <- treatment_plot + theme(axis.text.x = element_text(angle=32,hjust=1, size=7)) + theme(axis.text.y = element_text(size=6))+ theme(axis.title.y = element_text(size=7)) +theme(axis.title.x = element_text(size=7))
+treatment_plot <- treatment_plot  +ggtitle(" Predicted celltype proportions per treatment") + theme(plot.title = element_text(hjust = 0.5, size=8, face="bold"))
+treatment_plot <- treatment_plot + guides(color = guide_legend(override.aes = list(size=3), nrow = 2))
+treatment_plot <-  treatment_plot + theme(legend.text=element_text(size=7)) + theme(legend.title=element_text(size=8)) +theme(legend.key.size = unit(0.9, 'lines'))
+treatment_plot <- treatment_plot + theme(legend.position="right")
+treatment_plot <- treatment_plot + xlab("") + ylab("Percent")
+treatment_plot 
+```
+
+
+```{r}
+metadata_short <- metadata_ipsc %>% dplyr:: group_by(Treatment, broad_celltype)  %>% dplyr::summarise(tot.per.celltype=n())  %>% dplyr:: mutate(tot.treat.pt= sum(tot.per.celltype)) %>% dplyr:: mutate(percent=100*tot.per.celltype/tot.treat.pt)
+
+#setnames(metadata_short, "sample_demux", "Sample")
+#setnames(metadata_short, "predicted.id", "Predicted_Celltype")
+#metadata_short$predicted.id <- as.factor(metadata_short$predicted.id)
+cat("proportions of neuronal vs non-neuronal per condition")
+metadata_short %>% DT::datatable()
+```
+
+
+```{r}
+library(RColorBrewer)
+treat_plot <- ggplot(metadata_short, aes(Treatment, percent, fill=broad_celltype)) 
+treat_plot <- treat_plot +geom_bar(stat="identity", position="stack", colour ="black", width = 0.5)  + scale_fill_brewer(palette="Set2")
+#sample_plot <- sample_plot + coord_flip()
+treat_plot <- treat_plot + theme(axis.text.x = element_text(angle=32,hjust=1, size=7)) + theme(axis.text.y = element_text(size=6))+ theme(axis.title.y = element_text(size=7)) +theme(axis.title.x = element_text(size=7))
+treat_plot <- treat_plot  +ggtitle("Neuronal:non-neuronal proportions per treatment group") + theme(plot.title = element_text(hjust = 0.5, size=8, face="bold"))
+treat_plot <- treat_plot + guides(color = guide_legend(override.aes = list(size=3), nrow = 2))
+treat_plot <-  treat_plot + theme(legend.text=element_text(size=7)) + theme(legend.title=element_text(size=8)) +theme(legend.key.size = unit(0.9, 'lines'))
+treat_plot <- treat_plot + theme(legend.position="right")
+treat_plot <- treat_plot + xlab("") + ylab("Percent")
+treat_plot 
+```
+
+
+
+
+
++ Visualise predicted cell types on UMAP plot to see if makes sense, and also identify what the G2M cell cycle phase cells were.
++ There is clear neuronal vs non-neuronal cell type seperation on UMAP plot , except few cells which lie on the border
++ G2M phase cells were glia (ODC mostly)
+
+```{r, fig.height=7, fig.width=9}
+p1 <-DimPlot(ipsc.combined_sct, label = T) + NoLegend() + NoAxes()
+p2 <- DimPlot(ipsc.combined_sct,group.by = "Phase") +NoAxes()
+cols <- DiscretePalette(8, palette = "alphabet2")
+p3 <-DimPlot(ipsc.combined_sct, group.by = "predicted.id", label=T, cols = cols, order = T) +NoAxes()
+p4 <-DimPlot(ipsc.combined_sct, group.by = "broad_celltype", label = T) +NoLegend() +NoAxes()
+#CombinePlots(list(p1,p2,p3,p4), ncol = 2)
+p1+ p2+p3+p4
+```
+
++ Visualize each of the predicted celltype separately for clearer visualization of the cells labelled
+
+```{r}
+Idents(ipsc.combined_sct) <- "predicted.id"
+my_clusters <- unique(ipsc.combined_sct$predicted.id)
+
+for (my_cluster in my_clusters) {
+    cells_highlight <- WhichCells(ipsc.combined_sct, idents = my_cluster)
+    
+    cat(paste0("\n\n",my_cluster,"\n"))
+    print(DimPlot(object = ipsc.combined_sct,
+            reduction = "umap",
+            pt.size = 0.5, 
+            label = FALSE,
+            cells.highlight= cells_highlight, 
+            cols.highlight = "black",
+            sizes.highlight = 0.1,
+            cols= "lightsteelblue2",
+            raster=F,
+            na.value = "lightsteelblue2") + 
+        ggtitle(my_cluster) +
+        NoAxes() + 
+        # xlim(-40,40) +
+        # ylim(-40,40) +
+        NoLegend() + 
+        coord_fixed()
+        )
+
+}
+```
+
+# Predicted Cell Type Markers
+
++ Run a differential analysis on the cells based on the predicted cell types to confirm if these are accurate based on the top markers for each cell type
++ Not using FindConservedMArkers function at the moment, this identifies conserved cell type markers across conditions
++ Differential test : "LR"
++ Assay : RNA assay
++ Slot: data
++ min.pct or minimum fraction of cells in either of the two populations : 0.15
++ LogFC threshold : 0.25 and only UP genes calculated
+
+
+```{r, echo=FALSE, eval= F}
+DefaultAssay(ipsc.combined_sct) <- "RNA"
+Idents(ipsc.combined_sct) <- "predicted.id"
+ipsc.combined_sct <- NormalizeData(ipsc.combined_sct)
+all.genes <- rownames(ipsc.combined_sct)
+ipsc.combined_sct <- ScaleData(ipsc.combined_sct, features = all.genes, vars.to.regress = c("nCount_RNA"))
+saveRDS(ipsc.combined_sct, file = "Tofaris_10x_sct_macosko_celltype_predicted_projected_umpa_rna_scaled.rds")
+```
+
+```{r, eval=FALSE}
+
+ipsc.celltype.markers <- FindAllMarkers(ipsc.combined_sct, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "LR" , assay = "RNA",random.seed = 456, latent.vars = c("nCount_RNA"))
+#ipsc.celltype.markers_poisson <- FindAllMarkers(ipsc.hashtag.singlet, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "poisson", assay = "SCT",random.seed = 456)
+#saveRDS(ipsc.celltype.markers_poisson, file="./ipsc_predicted_celltype_markers_poisson.rds")
+saveRDS(ipsc.celltype.markers, file="ipsc_predicted_celltype_markers_LR.rds")
+```
+
+```{r}
+ipsc.combined_sct <- readRDS(file="./Tofaris_10x_sct_macosko_celltype_predicted_projected_umpa_rna_scaled.rds")
+cat("Table of top 20 markers by average logFC per cluster")
+ipsc.celltype.markers <- readRDS(file="./ipsc_predicted_celltype_markers_LR.rds")
+ipsc.celltype.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05)%>% top_n(n = 25, wt = avg_log2FC) %>% DT::datatable()
+```
+
++ Heatmap of top 15 differential markers based on predicted cell type
+
++ No clear seperation between the neuronal subtypes can be seen
+
+```{r, fig.height=12, fig.width=9}
+DefaultAssay(ipsc.combined_sct) <- "SCT"
+Idents(ipsc.combined_sct) <- "predicted.id"
+top15 <- ipsc.celltype.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 15, wt = avg_log2FC)
+
+
+DoHeatmap(ipsc.combined_sct, features = top15$gene, size=2, assay = "SCT") + scale_fill_distiller(type="div", palette = "RdYlBu")
+```
+
+# Broad Cell type markers
++ Differential expression between Neuronal vs Non-Neuronal cell types based on predicted cell type
++ Differential test : LR
++ assay: RNA
++ min.pct or minimum fraction of cells in either of the two populations : 0.15
++ LogFC threshold : 0.25 and only UP genes calculated
+
+
+```{r, echo=FALSE, eval=F}
+DefaultAssay(ipsc.combined_sct) <- "RNA"
+Idents(ipsc.combined_sct) <- "broad_celltype"
+ipsc.broad.celltype.markers <- FindAllMarkers(ipsc.combined_sct, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "LR" , assay = "RNA",random.seed = 495, latent.vars = "nCount_RNA")
+saveRDS(ipsc.broad.celltype.markers, file="ipsc_broad_celltype_broad_markers_LR.rds")
+#ipsc.broad.celltype.markers <- readRDS(file="./ipsc_broad_celltype_broad_markers_negbinom.rds")
+```
+
+```{r}
+ipsc.broad.celltype.markers <- readRDS(file="ipsc_broad_celltype_broad_markers_LR.rds")
+cat("Table of top 30 markers by average logFC per cluster")
+ipsc.broad.celltype.markers %>% group_by(cluster)  %>%  filter(p_val_adj < 0.05) %>% top_n(n = 30, wt = avg_log2FC) %>% DT::datatable()
+```
+
++ Heatmap of top 20 differential markers based on neuronal vs non-neuronal cell types
++ Neuronal cell types have high clear expression neuronal markers such as MAPT, STMN2
+
+```{r, fig.height=6, fig.width=8}
+DefaultAssay(ipsc.combined_sct) <- "SCT"
+Idents(ipsc.combined_sct) <- "broad_celltype"
+top20 <- ipsc.broad.celltype.markers %>% group_by(cluster) %>%  filter(p_val_adj < 0.05) %>% top_n(n = 20, wt = avg_log2FC)
+DoHeatmap(ipsc.combined_sct, features = top20$gene, size=2, assay = "SCT", angle=0) + scale_fill_distiller(type="div", palette = "RdYlBu")
+```
+
+# Seurat Cluster type markers
++ Differential test : LR
++ min.pct or minimum fraction of cells in either of the two populations : 0.25
++ LogFC threshold : 0.25 and only UP genes calculated
++ Differential expression between identified clusters to confirm predicted cell types make sense
+
+```{r, eval=FALSE}
+DefaultAssay(ipsc.combined_sct) <- "RNA"
+Idents(ipsc.combined_sct) <- "seurat_clusters"
+ipsc.seurat.cluster.markers <- FindAllMarkers(ipsc.combined_sct, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "LR" , assay = "RNA",random.seed = 456, latent.vars = "nCount_RNA")
+saveRDS(ipsc.seurat.cluster.markers, file="ipsc_seurat_cluster_markers_LR.rds")
+```
+
+```{r}
+ipsc.seurat.cluster.markers  <- readRDS(file="./ipsc_seurat_cluster_markers_LR.rds")
+#ipsc.seurat.cluster.markers <- readRDS(file="./ipsc_seurat_cluster_markers_negbinom.rds")
+cat("Table of top 15 markers by average log2FC per cluster")
+ipsc.seurat.cluster.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 15, wt = avg_log2FC) %>% DT::datatable()
+```
+
++ Heatmap of top 10 markers for Seurat identified Clusters
++ As seen clusters 2 ,3 & 10 expressed neuronal markers and were predicted to be neuronal as well
+
+```{r, fig.height=14, fig.width=10}
+DefaultAssay(ipsc.combined_sct) <- "SCT"
+Idents(ipsc.combined_sct) <- "seurat_clusters"
+top10 <- ipsc.seurat.cluster.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(ipsc.combined_sct, features = top10$gene, size=4, assay = "SCT",group.bar.height = 0.01, angle=0) + scale_fill_distiller(type="div", palette = "RdYlBu")
+```
+
+# Subclustering of Neuronal population
+
++ The neuronal population was subsetted and re-run SCTransform workflow with only nUMI as an unwanted covariate.
+
++ This will better seperate the neuronal subtypes, as they will be clustered in their own feature space
+
+```{r, eval=FALSE}
+Idents(ipsc.combined_sct) <- "broad_celltype"
+ipsc.combined_sct.neuronal <- subset(x = ipsc.combined_sct, idents = "Neuronal")
+# Normalize RNA data with log normalization
+ipsc.combined_sct.neuronal@meta.data <- ipsc.combined_sct.neuronal@meta.data[,-c(12,13)]
+ipsc.combined_sct.neuronal <- SCTransform(ipsc.combined_sct.neuronal, verbose = F, return.only.var.genes = F)
+ipsc.combined_sct.neuronal <- RunPCA(ipsc.combined_sct.neuronal, features = VariableFeatures(ipsc.combined_sct.neuronal))
+```
+
+
+
++ As before regressed out nUMI
++ Used 15 PCs and a resolution of 0.2 for clustering with SLM algorithm
+
+```{r, eval=F}
+ipsc.combined_sct.neuronal <- FindNeighbors(ipsc.combined_sct.neuronal, reduction = "pca", dims = 1:15, do.plot = T, force.recalc = T)
+ipsc.combined_sct.neuronal <- FindClusters(ipsc.combined_sct.neuronal, resolution = 0.2, algorithm = 3)
+ipsc.combined_sct.neuronal <- RunUMAP(ipsc.combined_sct.neuronal, reduction = "pca", dims = 1:15)
+saveRDS(ipsc.combined_sct.neuronal, file="./Tofaris_10x_postnormalisation_SCTransform_neuronalonly.rds")
+```
+
+```{r}
+ipsc.combined_sct.neuronal <- readRDS(file= "./Tofaris_10x_postnormalisation_SCTransform_neuronalonly.rds")
+cat(" Elbow plot and top genes for PCA for neuronal only cells ")
+ElbowPlot(ipsc.combined_sct.neuronal, ndims = 50)
+#print(ipsc.hashtag.singlet.neuronal[["pca"]], dims = 1:10, nfeatures = 10)
+VizDimLoadings(ipsc.combined_sct.neuronal, dims = 1:2, reduction = "pca")
+#ipsc.hashtag.singlet.neuronal <- CellCycleScoring(ipsc.hashtag.singlet.neuronal, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+```
+
+
+```{r}
+
+
+# Projecting singlet identities on TSNE visualization
+cat("UMAP plot showing identified clusters")
+DimPlot(ipsc.combined_sct.neuronal, label = T )
+cat("UMAP plot showing identified clusters coloured by predicted celltypes")
+DimPlot(ipsc.combined_sct.neuronal, group.by = "predicted.id") 
+cat("UMAP plot showing identified clusters coloured by Treatment")
+DimPlot(ipsc.combined_sct.neuronal, group.by = "Treatment")
+
+```
+
+
+
+
+# Neuronal Cluster type markers
++ Differential test : LR
++ min.pct or minimum fraction of cells in either of the two populations : 0.15
++ LogFC threshold : 0.25 and only UP genes calculated
+
++ Differential expression between identified neuronal sub-clusters to confirm if clusters align with predicted cell types
+
+```{r, eval=FALSE}
+DefaultAssay(ipsc.combined_sct.neuronal) <- "RNA"
+ipsc.combined_sct.neuronal <- NormalizeData(ipsc.combined_sct.neuronal)
+all.genes <- rownames(ipsc.combined_sct.neuronal)
+ipsc.combined_sct.neuronal <- ScaleData(ipsc.combined_sct.neuronal, features = all.genes)
+saveRDS(ipsc.combined_sct.neuronal, file="./Tofaris_10x_postnormalisation_SCTransform_neuronalonly_RNAscaled.rds")
+Idents(ipsc.combined_sct.neuronal) <- "seurat_clusters"
+ipsc.neuronal.seurat.cluster.markers <- FindAllMarkers(ipsc.combined_sct.neuronal, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "LR" , assay = "RNA",random.seed = 456, latent.vars = "nCount_RNA")
+#saveRDS(ipsc.seurat.cluster.markers, file="ipsc_seurat_cluster_markers_negbinom.rds")
+saveRDS(ipsc.neuronal.seurat.cluster.markers,file="./ipsc_neuronal_seurat_subcluster_markers_LR.rds")
+```
+
+```{r}
+ipsc.combined_sct.neuronal <- readRDS(file="./Tofaris_10x_postnormalisation_SCTransform_neuronalonly_RNAscaled.rds")
+Idents(ipsc.combined_sct.neuronal) <- "seurat_clusters"
+ipsc.neuronal.seurat.cluster.markers <- readRDS(file="./ipsc_neuronal_seurat_subcluster_markers_LR.rds")
+cat("Table of top 15 markers by average logFC per neuronal subcluster")
+ipsc.neuronal.seurat.cluster.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 15, wt = avg_log2FC) %>% DT::datatable()
+```
+
++ Heatmap of top 20 markers for neuronal sub-clusters
++ No clear DaN markers seen for cluster 2 & 1, which has the cells predicted to be DaNS
+
+```{r, fig.height=9, fig.width=7}
+DefaultAssay(ipsc.combined_sct.neuronal) <- "SCT"
+top20 <- ipsc.neuronal.seurat.cluster.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 15, wt = avg_log2FC)
+DoHeatmap(ipsc.combined_sct.neuronal, features = top20$gene, size=4, assay = "SCT",group.bar.height = 0.01, angle=0) + scale_fill_distiller(type="div", palette = "RdYlBu")
+```
+
+
+# Predicted Neuronal subtype-type markers
++ Differential test : LR
++ min.pct or minimum fraction of cells in either of the two populations : 0.15
++ LogFC threshold : 0.25 and only UP genes calculated
++ Differential expression between predicted neuronal sub-types to see if sub-type specific (e.g. Exneurons, Inhneurons and DaNs) markers can be identified
+
+```{r, eval=FALSE}
+DefaultAssay(ipsc.combined_sct.neuronal) <- "RNA"
+Idents(ipsc.combined_sct.neuronal) <- "predicted.id"
+ipsc.neuronal.subtype.markers <- FindAllMarkers(ipsc.combined_sct.neuronal, only.pos = TRUE, min.pct = 0.15, logfc.threshold = 0.25, return.thresh = 0.05, test.use = "LR" , assay = "RNA",random.seed = 456, latent.vars = "nCount_RNA")
+#saveRDS(ipsc.seurat.cluster.markers, file="ipsc_seurat_cluster_markers_negbinom.rds")
+saveRDS(ipsc.neuronal.subtype.markers,file="./ipsc_neuronal_subtype_markers_LR.rds")
+```
+
+```{r}
+ipsc.neuronal.subtype.markers <- readRDS(file="./ipsc_neuronal_subtype_markers_LR.rds")
+
+cat("Table of top 15 markers by average logFC per neuronal subtype")
+ipsc.neuronal.subtype.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 15, wt = avg_log2FC) %>% DT::datatable()
+```
+
++ Heatmap of top 20 markers for predicted neuronal subtypes : Exneurons , Inh_neurons and DaNs
++ no canonical markers for DaNs can be seen
+
+```{r, fig.height=7, fig.width=8}
+DefaultAssay(ipsc.combined_sct.neuronal) <- "SCT"
+Idents(ipsc.combined_sct.neuronal) <- "predicted.id"
+top20 <- ipsc.neuronal.subtype.markers %>% group_by(cluster) %>% filter(p_val_adj < 0.05) %>% top_n(n = 20, wt = avg_log2FC)
+DoHeatmap(ipsc.combined_sct.neuronal, features = top20$gene, size=4, assay = "SCT",group.bar.height = 0.01, angle=0, draw.lines = T) + scale_fill_distiller(type="div", palette = "RdYlBu")
+```
+
+
+# Treatment markers neuronal population
+
++ As we dint see good separation between neuronal subtypes above, this analysis was done on the whole neuronal population
+
+
+## Differential expression: PD vs NSC cells
++ Differential test : LR
++ min.pct or minimum fraction of cells in either of the two populations : 0.10
++ LogFC threshold : 0.25
++ p_val_adj: Adjusted p-value, based on bonferroni correction using all genes in the dataset
+
++ Differential expression in predicted neuronal population between PD vs control cells
+
+```{r, eval=F}
+Idents(ipsc.combined_sct.neuronal) <- "Treatment"
+ipsc.neuronal.treatment.markers <- FindMarkers(ipsc.combined_sct.neuronal, only.pos = F, min.pct = 0, logfc.threshold = 0, return.thresh = 0, test.use = "LR" , assay = "RNA",random.seed = 456, ident.1 ="PD", ident.2 = "NSC", latent.vars = "nCount_RNA")
+#saveRDS(ipsc.seurat.cluster.markers, file="ipsc_seurat_cluster_markers_negbinom.rds")
+saveRDS(ipsc.neuronal.treatment.markers,file="./ipsc_neuronal_treatment_markers_LR_minpct0_logfc_0.rds")
+#ipsc.neuronal.subtype.treatment.markers_sig <- subset(ipsc.neuronal.subtype.treatment.markers, ipsc.neuronal.subtype.treatment.markers$p_val_adj < 0.05, select=1:5)
+```
+
+```{r}
+ipsc.neuronal.treatment.markers <- readRDS(file = "./ipsc_neuronal_treatment_markers_LR_minpct0_logfc_0.rds")
+ipsc.neuronal.treatment.markers_sig <- ipsc.neuronal.treatment.markers %>% filter(pct.1 >= 0.10| pct.2>=0.10 & abs(avg_log2FC) > 0.25) %>% filter(p_val_adj < 0.05)
+
+cat("Number of significant differentially expressed genes after bonferroni for treatment:",
+    (length(which(ipsc.neuronal.treatment.markers_sig$p_val_adj < 0.05))), fill=T)
+
+
+
+cat(" Table of significant DEG in neuronal population for PD vs NSC ")
+
+ipsc.neuronal.treatment.markers_sig %>% rownames_to_column( var="gene")  %>% DT::datatable()
+```
+
++ Violin plots of top 10 up and down genes in PD vs control in neuronal population
+
+```{r, fig.height=12, fig.width=7}
+
+cat("Top 10 up regulated genes")
+top10_up <- ipsc.neuronal.treatment.markers_sig %>%  rownames_to_column( var="gene") %>% top_n(n = 10, wt = avg_log2FC)
+
+plots <- VlnPlot(ipsc.combined_sct.neuronal, features = top10_up$gene, group.by = "Treatment",
+    pt.size = 0.01, combine = T, split.plot = F, ncol=2, assay= "RNA") + FontSize(x.text = 6, x.title = 6,y.title = 5)
+plots
+
+```
+
+```{r, fig.height=12, fig.width=7}
+
+cat("Top 10 down-regulated genes")
+top10_down <- ipsc.neuronal.treatment.markers_sig %>%  rownames_to_column( var="gene") %>% top_n(n = -10, wt = avg_log2FC)
+
+plots <- VlnPlot(ipsc.combined_sct.neuronal, features = top10_down$gene, group.by = "Treatment", 
+    pt.size = 0.01, combine = T, ncol = 2, assay="RNA") + FontSize(x.text = 6, x.title = 6,y.title = 5)
+plots
+
+```
+
++ Heatmap of Average Expression top 20 up and down genes after treatment
+
+```{r, fig.height=6, fig.width=8}
+top20_up <- ipsc.neuronal.treatment.markers_sig %>%  rownames_to_column( var="gene") %>% top_n(n = 20, wt = avg_log2FC)
+top20_down <- ipsc.neuronal.treatment.markers_sig %>%  rownames_to_column( var="gene") %>% top_n(n = -20, wt = avg_log2FC)
+top40 <- rbind(top20_up,top20_down)
+ipsc.combined_sct.neuronal$predicted.id_treat <- paste(ipsc.combined_sct.neuronal$predicted.id, ipsc.combined_sct.neuronal$Treatment, sep="_")
+Idents(ipsc.combined_sct.neuronal) <- "predicted.id_treat"
+ipsc.combined_sct.neuronal_avg  <- AverageExpression(ipsc.combined_sct.neuronal , return.seurat = T )
+DoHeatmap(ipsc.combined_sct.neuronal_avg, features = top40$gene, size=4, assay = "RNA",group.bar.height = 0.01, angle=0, draw.lines = F, 
+          label =F, slot="data") + scale_fill_distiller(type= "div", palette = "RdYlBu")
+```
+
+## Gene Set Enrichment Analysis
+
+### KEGG Pathways
+
+```{r, echo=FALSE,message=FALSE, warning=FALSE}
+# from https://stephenturner.github.io/deseq-to-fgsea/
+#neuronal_ipsc_scaled <- GetAssayData(object = ipsc.hashtag.singlet.neuronal, slot = "scale.data", assay="SCT")
+library(fgsea)
+library(tidyr)
+library(tibble)
+#gsea_res2 <- ipsc.neuronal.treatment.markers %>% tibble::rownames_to_column( var="gene") %>% dplyr::select(gene,avg_log2FC) %>% na.omit() %>% distinct() %>% dplyr::group_by(gene) %>% dplyr::summarize(avg_log2FC=mean(avg_log2FC))
+
+# fast Gene Set Enrichment Analysis
+#ranks <- tibble::deframe(gsea_res2)
+#saveRDS(ranks, file="neuronal_treatment_results_deframed.rds")
+ranks <- readRDS(file="./neuronal_treatment_results_deframed.rds")
+pathways.kegg <- gmtPathways("genesets/c2.cp.kegg.v7.2.symbols.gmt")
+fgsea_kegg <- fgseaMultilevel(pathways=pathways.kegg, stats=ranks, nPermSimple = 10000, maxSize = 500, minSize = 15)
+#saveRDS(fgsea_kegg, file="Neuronal_treatment_fgsea_kegg_results.rds")
+#fgsea_kegg <- readRDS(file="Neuronal_treatment_fgsea_kegg_results.rds")
+# convert to tibble, sort by NES and select columns
+fgsea_kegg_tidy <- fgsea_kegg %>% as_tibble() %>% dplyr::arrange(desc(NES)) %>% dplyr::select(-pval, -ES)
+# Show in a nice table:
+fgsea_kegg_tidy %>% DT::datatable()
+#fgsea_kegg_tidy
+```
+
+### Top 15 up and down regulated KEGG pathways
+
+Not all pathways necessarily significant to adjusted p-value < 0.05
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, cache=TRUE}
+# Top 10 regardless of adjusted p-value
+top_kegg_up <- fgsea_kegg[ES > 0][size < 250][order(padj,-NES),pathway][1:15]
+top_kegg_dn <- fgsea_kegg[ES < 0][size < 250][order(padj,NES),pathway][1:15]
+top_kegg <- c(top_kegg_up, rev(top_kegg_dn))
+ plotGseaTable(pathways.kegg[top_kegg], ranks, fgsea_kegg, gseaParam = 0.5)
+ fgsea_kegg_tidy_top <- fgsea_kegg_tidy %>% dplyr::filter(pathway %in% top_kegg)
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9}
+
+p1 <- ggplot(fgsea_kegg_tidy_top, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.25)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top up and down KEGG pathways NES from GSEA") + theme(title=element_text(size=7))+theme(axis.text.y = element_text(size=8))+theme(plot.title = element_text(size=7))
+p1
+```
+
+### Enrichments plots for top KEGG hits
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for (i in 1:5) {
+  print(plotEnrichment(pathways.kegg[[top_kegg_up[i]]], ranks) + labs(title=top_kegg_up[i]))
+}
+```
+
+### Leading Edge heatmaps for top KEGG hits
+
+
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+top_kegg_up_full <- fgsea_kegg[ES > 0][size < 250][order(padj,-NES),][1:5]
+
+for (i in 1:5) {
+   #Full pathway
+  #print(pathways.kegg[[top_kegg_up[i]]])
+  #Leading edge only
+  leading_edge = as.vector(top_kegg_up_full[i]$leadingEdge[[1]])
+  #leading_edge_ensg = inner_join(leading_edge, ens2symbol, by=c("symbol"="SYMBOL"))
+  print(DoHeatmap(ipsc.combined_sct.neuronal_avg, features = leading_edge, size=2, assay = "RNA",group.bar.height = 0.01, angle=45,draw.lines = F,
+                  slot="data") + scale_fill_distiller(type="div", palette = "RdYlBu") + labs(title= top_kegg_up_full[i])) + FontSize(main = 5)
+}
+```
+
+### GO BP GSEA
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pathways.go <- gmtPathways("./genesets/c5.go.bp.v7.2.symbols.gmt")
+fgsea_go <- fgseaMultilevel(pathways=pathways.go, stats=ranks, nPermSimple = 10000, minSize = 15, maxSize = 500)
+fgsea_go_tidy <- fgsea_go %>% as_tibble() %>% dplyr::arrange(desc(NES))
+# Show in a nice table:
+fgsea_go_tidy %>% dplyr::select(-ES, -pval) %>% dplyr::arrange(padj) %>% DT::datatable()
+#fgsea_go_tidy
+```
+### Top 20 up and down regulated GO Terms
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+top_go_up <- fgsea_go[ES > 0][size < 250][order(padj,-NES),pathway][1:20]
+top_go_dn <- fgsea_go[ES < 0][size < 250][order(padj,NES),pathway][1:20]
+top_go <- c(top_go_up, rev(top_go_dn))
+plotGseaTable(pathways.go[top_go], ranks, fgsea_go, gseaParam = 0.5)
+fgsea_go_tidy_top <- fgsea_go_tidy %>% dplyr::filter(pathway %in% top_go)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE,fig.height=6, fig.width=8}
+
+p1 <- ggplot(fgsea_go_tidy_top, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top up and down GO pathways NES from GSEA") + theme(title=element_text(size=7))+theme(axis.text.y = element_text(size=7))+theme(plot.title = element_text(size=7))
+p1
+```
+
+### Enrichment Plots for top GO Terms
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for (i in 1:5) {
+  print(plotEnrichment(pathways.go[[top_go_up[i]]], ranks) + labs(title=top_go_up[i]))
+}
+```
+
+### Leading Edge heatmaps for top GO hits
+
+Heatmap of row noemalised rld regularised leg transformed size factor normalised read counts
+
+```{r, fig.height=6}
+library(RColorBrewer)
+library(pheatmap)
+top_go_up_full <- fgsea_go[ES > 0][size < 250][order(padj,-NES),][1:5]
+
+for (i in 1:5) {
+   #Full pathway
+  #print(pathways.kegg[[top_kegg_up[i]]])
+  #Leading edge only
+  leading_edge = as.vector(top_go_up_full[i]$leadingEdge[[1]])
+  #leading_edge_ensg = inner_join(leading_edge, ens2symbol, by=c("symbol"="SYMBOL"))
+  print(DoHeatmap(ipsc.combined_sct.neuronal_avg, features = leading_edge, size=3, assay = "RNA",group.bar.height = 0.01, angle=45, draw.lines = F,slot="data") + scale_fill_distiller(type="div", palette = "RdYlBu") + labs(title= top_go_up_full[i])) 
+}
+```
+
+
+# Treatment markers for DaN predicted cells only
+
+
+```{r}
+Idents(ipsc.combined_sct.neuronal) <- "predicted.id"
+DefaultAssay(ipsc.combined_sct.neuronal) <- "RNA"
+
+
+ipsc.neuronal.DaNs <- subset(x = ipsc.combined_sct.neuronal, idents = c("DaNs"), invert=F)
+# Normalize RNA data with log normalization
+```
+
+
+
+## Differential expression: PD vs control cells
+
++ Differential test : LR
++ min.pct or minimum fraction of cells in either of the two populations : 0.10
++ LogFC threshold : 0 
++ p_val_adj: Adjusted p-value, based on bonferroni correction using all genes in the dataset
++ Differential expression in predicted non-neuronal population between Agregated vs control cells
++ latent variables : neuronal maturity based on STMN1 expression
+
+
+```{r, eval=FALSE}
+
+Idents(ipsc.neuronal.DaNs) <- "Treatment"
+ipsc.DaNs.treatment.markers <- FindMarkers(ipsc.neuronal.DaNs, only.pos = F, min.pct = 0.0, logfc.threshold = 0, return.thresh = 0.0, test.use = "LR" , assay = "RNA",random.seed = 456, ident.1 ="PD", ident.2 = "NSC", latent.vars = "nCount_RNA")
+#saveRDS(ipsc.seurat.cluster.markers, file="ipsc_seurat_cluster_markers_negbinom.rds")
+saveRDS(ipsc.DaNs.treatment.markers,file="./ipsc.DaNs.treatment.markers_LR.rds")
+#ipsc.neuronal.subtype.treatment.markers_sig <- subset(ipsc.neuronal.subtype.treatment.markers, ipsc.neuronal.subtype.treatment.markers$p_val_adj < 0.05, select=1:5)
+```
+
+```{r}
+ipsc.DaN.treatment.markers <- readRDS(file = "./ipsc.DaNs.treatment.markers_LR.rds")
+ipsc.DaN.treatment.markers_sig <- ipsc.DaN.treatment.markers %>% filter(pct.1 >= 0.10| pct.2>=0.10 & abs(avg_log2FC) > 0.15) %>% filter(p_val_adj < 0.05)
+
+cat("Number of significant differentially expressed genes after bonferroni for treatment in DaNs:",
+    (length(which(ipsc.DaN.treatment.markers_sig$p_val_adj < 0.05))), fill=T)
+
+```
+
+
+
+```{r, cache=F}
+cat("Table of significant  markers by adjusted p-value that were changed after treatment in DaNs", fill=T)
+
+ipsc.DaN.treatment.markers_sig %>% rownames_to_column( var="gene") %>%  dplyr::arrange(desc(avg_log2FC)) %>% dplyr::top_n(n =18, wt = avg_log2FC) %>% DT::datatable()
+```
+
+
+
+
+
++ Violin plots of top 10 up and down genes in PD vs control in DaN population
+
+
+```{r, fig.height=6, fig.width=7}
+
+cat("Top up regulated genes")
+top_up <- ipsc.DaN.treatment.markers_sig%>%  rownames_to_column( var="gene") %>% filter(avg_log2FC > 0)
+
+plots <- VlnPlot(ipsc.neuronal.DaNs, features = top_up$gene,  group.by = "Treatment", 
+    pt.size = 0.1, combine = T, ncol = 2)
+plots
+
+```
+
+```{r, fig.height=12, fig.width=9}
+
+cat("Top  down-regulated genes")
+top10_down <- ipsc.DaN.treatment.markers_sig %>%  rownames_to_column( var="gene") %>% filter(avg_log2FC < 0)
+
+plots <- VlnPlot(ipsc.neuronal.DaNs, features = top10_down$gene, group.by = "Treatment" ,
+    pt.size = 0.1, combine = T, ncol=3) + FontSize(y.title = 0, x.title = 3, x.text = 6) + theme(axis.title.y = element_blank())
+plots
+```
+
+
+
+## Gene Set Enrichment Analysis
+
+### KEGG Pathways
+
+```{r, echo=FALSE,message=FALSE, warning=FALSE}
+# from https://stephenturner.github.io/deseq-to-fgsea/
+#neuronal_ipsc_scaled <- GetAssayData(object = ipsc.hashtag.singlet.neuronal, slot = "scale.data", assay="SCT")
+library(fgsea)
+library(tidyr)
+library(tibble)
+#gsea_res2 <- ipsc.DaN.treatment.markers %>% tibble::rownames_to_column( var="gene") %>% dplyr::select(gene,avg_log2FC) %>% na.omit() %>% distinct() %>% dplyr::group_by(gene) %>% dplyr::summarize(avg_logFC=mean(avg_log2FC))
+
+# fast Gene Set Enrichment Analysis
+#ranks <- tibble::deframe(gsea_res2)
+#saveRDS(ranks, file="treatment_results_deframed_DaNs.rds")
+ranks <- readRDS(file="./treatment_results_deframed_DaNs.rds")
+#pathways.kegg <- gmtPathways("../dataset2/genesets/c2.cp.kegg.v6.2.symbols.gmt")
+fgsea_kegg <- fgseaMultilevel(pathways=pathways.kegg, stats=ranks, nPermSimple = 10000, maxSize = 500, minSize = 15)
+#saveRDS(fgsea_kegg, file="Neuronal_treatment_fgsea_kegg_results.rds")
+#fgsea_kegg <- readRDS(file="Neuronal_treatment_fgsea_kegg_results.rds")
+# convert to tibble, sort by NES and select columns
+fgsea_kegg_tidy <- fgsea_kegg %>% as_tibble() %>% dplyr::arrange(desc(NES)) %>% dplyr::select(-pval, -ES)
+# Show in a nice table:
+fgsea_kegg_tidy %>% DT::datatable()
+#fgsea_kegg_tidy
+```
+
+### Top 15 up and down regulated KEGG pathways
+
+Not all pathways necessarily significant to adjusted p-value < 0.05
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Top 10 regardless of adjusted p-value
+top_kegg_up <- fgsea_kegg[ES > 0][size < 250][order(padj,-NES),pathway][1:15]
+top_kegg_dn <- fgsea_kegg[ES < 0][size < 250][order(padj,NES),pathway][1:15]
+top_kegg <- c(top_kegg_up, rev(top_kegg_dn))
+ plotGseaTable(pathways.kegg[top_kegg], ranks, fgsea_kegg, gseaParam = 0.5)
+ fgsea_kegg_tidy_top <- fgsea_kegg_tidy %>% dplyr::filter(pathway %in% top_kegg)
+
+```
+
+
+```{r, fig.height=6, fig.width=9}
+
+p1 <- ggplot(fgsea_kegg_tidy_top, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.25)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top up and down KEGG pathways NES from GSEA") + theme(title=element_text(size=7))+theme(axis.text.y = element_text(size=8))+theme(plot.title = element_text(size=7))
+p1
+```
+
+### Enrichments plots for top KEGG hits
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for (i in 1:5) {
+  print(plotEnrichment(pathways.kegg[[top_kegg_up[i]]], ranks) + labs(title=top_kegg_up[i]))
+}
+```
+
+### Leading Edge dotplots for top KEGG hits
+
++Heatmap of scaled data grouped on treatment variable
+
+```{r, fig.height=6}
+library(RColorBrewer)
+library(pheatmap)
+top_kegg_up_full <- fgsea_kegg[ES > 0][size < 250][order(padj,-NES),][1:6]
+
+for (i in 1:6) {
+   #Full pathway
+  #print(pathways.kegg[[top_kegg_up[i]]])
+  #Leading edge only
+  leading_edge = as.vector(top_kegg_up_full[i]$leadingEdge[[1]])
+  #leading_edge_ensg = inner_join(leading_edge, ens2symbol, by=c("symbol"="SYMBOL"))
+  print(DotPlot(ipsc.neuronal.DaNs, features = leading_edge, assay = "RNA", group.by    = "predicted.id_treat", scale=F, cluster.idents = T)  + RotatedAxis() + labs(title= top_kegg_up_full[i])) 
+}
+```
+
+### Gene Ontology
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#pathways.go <- gmtPathways("../dataset2/genesets/c5.all.v6.2.symbols.gmt")
+fgsea_go <- fgsea(pathways=pathways.go, stats=ranks, nPermSimple=1000, minSize = 15, maxSize = 500)
+fgsea_go_tidy <- fgsea_go %>% as_tibble() %>% dplyr::arrange(desc(NES))
+# Show in a nice table:
+fgsea_go_tidy %>% dplyr::select(-ES, -pval) %>% dplyr::arrange(padj) %>% DT::datatable()
+#fgsea_go_tidy
+```
+
+
+### Top 20 up and down regulated GO Terms
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+top_go_up <- fgsea_go[ES > 0][size < 250][order(padj,-NES),pathway][1:20]
+top_go_dn <- fgsea_go[ES < 0][size < 250][order(padj,NES),pathway][1:20]
+top_go <- c(top_go_up, rev(top_go_dn))
+plotGseaTable(pathways.go[top_go], ranks, fgsea_go, gseaParam = 0.5)
+fgsea_go_tidy_top <- fgsea_go_tidy %>% dplyr::filter(pathway %in% top_go)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+
+p1 <- ggplot(fgsea_go_tidy_top, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",
+       title="Top up and down GO pathways NES from GSEA") + theme(title=element_text(size=7))+theme(axis.text.y = element_text(size=8))+theme(plot.title = element_text(size=7))
+p1
+```
+
+### Enrichment Plots for top GO Terms
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+for (i in 1:5) {
+  print(plotEnrichment(pathways.go[[top_go_up[i]]], ranks) + labs(title=top_go_up[i]))
+}
+```
+
+### Leading Edge dotplots for top GO hits
+
++Heatmap of scaled data grouped on treatment variable
+
+```{r, fig.height=6}
+library(RColorBrewer)
+library(pheatmap)
+top_go_up_full <- fgsea_go[ES > 0][size < 250][order(padj,-NES),][1:5]
+
+for (i in 1:5) {
+   #Full pathway
+  #print(pathways.kegg[[top_kegg_up[i]]])
+  #Leading edge only
+  leading_edge = as.vector(top_go_up_full[i]$leadingEdge[[1]])
+  #leading_edge_ensg = inner_join(leading_edge, ens2symbol, by=c("symbol"="SYMBOL"))
+  print(DotPlot(ipsc.neuronal.DaNs, features = leading_edge, assay = "RNA", group.by    = "predicted.id_treat", scale=F, cluster.idents = T)  + RotatedAxis() + FontSize(x.text = 7) + labs(title= top_go_up_full[i])) 
+}
+```
+
+
+
+# Conclusion
+In Summary, we definetly see more neuronal cells in this dataset then the previous dataset. But it is still not clear if the treatment truly has a significant transcriptional response.
+
+On only subsetting to the DaN prediticed positive cells and running a differential expression analysis for Treatment vs control, we only see 18 significant genes. However they are mostly involved in some sort of signalling pathways.
+
+If we run the whole neuronal only cluster for treatment vs PD , we identify 308 genes which are signficantly DEG,but lot more are downregulated as seen in the bulk data.
+
